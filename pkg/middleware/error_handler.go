@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"fmt"
 	"microservice/pkg/apperrors"
 	"microservice/pkg/httputil"
 
@@ -28,17 +29,19 @@ func ErrorHandlerMiddleware(log *zap.Logger) gin.HandlerFunc {
 		// Log según severidad
 		if statusCode >= 500 {
 			log.Error("Server error",
-				zap.String("error", err.Error()),
-				zap.String("path", c.Request.URL.Path),
+				zap.String("error_type", fmt.Sprintf("%T", err)),
+				zap.String("route", c.FullPath()),
 				zap.String("method", c.Request.Method),
 				zap.Int("status", statusCode),
+				zap.String("request_id", RequestIDFromContext(c)),
 			)
 		} else {
 			log.Warn("Client error",
-				zap.String("error", err.Error()),
-				zap.String("path", c.Request.URL.Path),
+				zap.String("error_type", fmt.Sprintf("%T", err)),
+				zap.String("route", c.FullPath()),
 				zap.String("method", c.Request.Method),
 				zap.Int("status", statusCode),
+				zap.String("request_id", RequestIDFromContext(c)),
 			)
 		}
 

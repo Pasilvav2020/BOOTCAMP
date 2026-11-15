@@ -7,30 +7,36 @@ import (
 	"microservice/internal/health/presentation/handler"
 	"microservice/pkg/database"
 	"microservice/pkg/logger"
-	"microservice/pkg/pubsub"
 
 	"go.uber.org/zap"
 )
 
 type Container struct {
 	DB            database.Database
-	PubSub        pubsub.PubSub
 	HealthHandler *handler.HealthHandler
+	OrderHandler  *handler.OrderHandler
 	Log           *zap.Logger
 }
 
-func NewContainer(cfg *config.Configuration, db database.Database, ps pubsub.PubSub, log *zap.Logger) (*Container, error) {
+func NewContainer(cfg *config.Configuration, db database.Database, log *zap.Logger) (*Container, error) {
 
 	repo := healthInfra.NewPostgresHealthRepository(db)
 	healthUC := healthUseCase.NewHealthUseCase(repo)
 	healthHdlr := handler.NewHealthHandler(healthUC)
 
+	orderRepo, err := healthInfra.NewPostgresOrderRepository(db)
+	if err != nil {
+		return nil, err
+	}
+	orderUC := healthUseCase.NewOrderUseCase(orderRepo)
+	orderHdlr := handler.NewOrderHandler(orderUC, log)
+
 	logger.Success("Container de dependencias inicializado...")
 
 	return &Container{
 		DB:            db,
-		PubSub:        ps,
 		HealthHandler: healthHdlr,
+		OrderHandler:  orderHdlr,
 		Log:           log,
 	}, nil
 }

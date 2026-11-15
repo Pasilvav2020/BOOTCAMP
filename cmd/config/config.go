@@ -9,7 +9,7 @@ type Configuration struct {
 	AppEnv          string `env:"ENVIRONMENT" envDefault:"dev" validate:"oneof= dev qa prod"`
 	Port            int    `env:"PORT" envDefault:"3200"`
 	LogLevel        string `env:"LOG_LEVEL" envDefault:"info"`
-	ShutDownTimeOut int    `env:"SHUTDOWN_TIMEOUT" envDefault:"30"`
+	ShutDownTimeOut int    `env:"SHUTDOWN_TIMEOUT" envDefault:"30" validate:"gt=0"`
 	// Se definen las variables de entorno necesarias para el proyecto
 	// DB, Redis, API_PATH, etc...
 	DBHost          string `env:"DB_HOST" envDefault:"localhost"`

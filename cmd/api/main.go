@@ -6,18 +6,25 @@
 package main
 
 import (
-	"log"
+	"fmt"
 	"microservice/cmd/app"
+	"microservice/pkg/logger"
+
+	"go.uber.org/zap"
 )
 
 func main() {
 	app := app.NewApp()
 
 	if err := app.Init(); err != nil {
-		log.Fatal("Error al iniciar: ", err)
+		logger.L().Fatal("Error al iniciar",
+			zap.String("error_type", fmt.Sprintf("%T", err)),
+		)
 	}
 
 	if err := app.Run(); err != nil {
-		log.Fatal("Error al ejecutar aplicativo: ", err)
+		logger.L().Fatal("Error al ejecutar aplicativo",
+			zap.String("error_type", fmt.Sprintf("%T", err)),
+		)
 	}
 }

@@ -13,8 +13,10 @@ type Message struct {
 	ID         string
 	Data       []byte
 	Attributes map[string]string
-	AckFunc    func()
-	NackFunc   func()
+	// AckFunc and NackFunc are retained for provider compatibility. Subscribers
+	// own final acknowledgement; handlers should return an error to request a retry.
+	AckFunc  func()
+	NackFunc func()
 }
 
 type MessageHandler func(ctx context.Context, msg *Message) error

@@ -1,0 +1,35 @@
+@baseUrl = http://localhost:3200
+
+###-----------------------------------
+### Crear pedido
+# @name crearPedido
+
+POST {{baseUrl}}/api/v1/orders
+Content-Type: application/json
+
+{
+  "rut_cliente": "14.449.619-1",
+  "articulos": [
+    {
+      "id": "2",
+      "cantidad": 1,
+      "precio_unitario": 5000
+    },
+    {
+      "id": "2",
+      "cantidad": 1,
+      "precio_unitario": 4990
+    }
+  ]
+}
+###-----------------------------------
+### Listar todos los pedidos
+GET {{baseUrl}}/api/v1/orders
+
+###-----------------------------------
+### Listar solo un pedido por ID
+GET {{baseUrl}}/api/v1/orders/214b2ef7-ba6c-483d-a385-1930f0e56224
+
+###-----------------------------------
+### Eliminar el pedido creado y todos sus detalles
+DELETE {{baseUrl}}/api/v1/orders/214b2ef7-ba6c-483d-a385-1930f0e56224

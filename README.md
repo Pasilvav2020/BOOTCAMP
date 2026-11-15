@@ -297,10 +297,44 @@ Cada driver implementa esta interfaz con su propio struct privado y factory: `Po
 
 ### Migraciones
 
-Las migraciones son **SQL puro**, ejecutadas a mano. No hay ORM, no hay auto-migrate:
+Las migraciones son **SQL puro**, ejecutadas a mano. No hay ORM, no hay auto-migrate. Para el esquema en español (`articulo`, `pedido` y `detalle_pedido`), ejecuta:
 
 ```bash
 psql -d microservice -f migrations/001_create_health_check.up.sql
+psql -d microservice -f migrations/007_create_articulo.up.sql
+psql -d microservice -f migrations/010_create_pedido_tables.up.sql
+psql -d microservice -f migrations/011_create_idempotency_keys.up.sql
+psql -d microservice -f migrations/012_create_failed_pubsub_messages.up.sql
+psql -d microservice -f scripts/seed_articulo.sql
+```
+
+Se eliminaron las migraciones del esquema anterior en inglés (`orders` y `order_items`), que no se usan con el esquema actual. La migración 007 crea el catálogo y la 010 crea `pedido` y `detalle_pedido` con IDs de texto; las migraciones 011 y 012 habilitan idempotencia y registro de mensajes Pub/Sub fallidos.
+
+### Crear pedidos
+
+```bash
+curl -X POST http://localhost:3200/api/v1/orders \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: order-request-001" \
+  -d "{\"rut_cliente\":\"12.345.678-5\",\"articulos\":[{\"id\":\"1\",\"cantidad\":2,\"precio_unitario\":1550.50}]}"
+```
+
+`POST /api/v1/orders` requiere `rut_cliente` con un RUT chileno válido y una lista `articulos` no vacía. Cada artículo debe incluir `id`, `cantidad` y `precio_unitario`; el ID debe existir en `articulo`, y la cantidad y el precio deben ser mayores que cero. Se acepta el RUT con puntos y guion (`12.345.678-5`) o sin separadores (`123456785`), y se almacena normalizado con guion y sin puntos. El estado inicial es `en_preparacion`. Devuelve `201 Created` únicamente con el ID generado del pedido (`order_id`) y su estado inicial (`estado`). La creación del pedido y sus detalles se realiza en una transacción.
+
+El header opcional `Idempotency-Key` evita crear pedidos duplicados al reintentar una solicitud. La misma clave con el mismo contenido devuelve el ID y estado originales; la misma clave con contenido distinto devuelve `409 Conflict`. Las claves quedan registradas en `idempotency_keys`, incluso si el pedido se elimina. Ejecuta la migración `011_create_idempotency_keys.up.sql` antes de usar este header. Sin el header, el endpoint mantiene su comportamiento actual.
+
+`GET /api/v1/orders` devuelve todos los pedidos con `articulos`, incluyendo el ID y nombre del artículo, `cantidad` y `precio_unitario`. En las respuestas de listado y consulta por ID, la fecha de creación usa el formato `YYYY-MM-DDTHH:mm:ss`, sin zona horaria. Si un pedido aún no tiene detalles, `articulos` se devuelve como una lista vacía.
+
+`DELETE /api/v1/orders/{id}` elimina el pedido y sus filas de `detalle_pedido` dentro de una única transacción; si falla cualquiera de las operaciones, se revierten ambas.
+
+### Actualizar un ítem del pedido
+
+`PUT /api/v1/orders/{order_id}/items/{item_id}` actualiza únicamente `quantity` y `unit_price`. Ambos campos son obligatorios, deben ser numéricos y mayores que cero. Devuelve `404` si el ítem no existe dentro del pedido indicado.
+
+```bash
+curl -X PUT http://localhost:3200/api/v1/orders/ID_PEDIDO/items/ID_DETALLE \
+  -H "Content-Type: application/json" \
+  -d "{\"quantity\":3,\"unit_price\":1700}"
 ```
 
 ### Pool de conexiones
@@ -469,6 +503,31 @@ ps, err := pubsub.NewGCPPubSub(context.Background(), cfg.PubSubProjectID)
 - Cachea `Publisher` por topic para reutilizar el batching interno del SDK
 - `Subscribe` recibe mensajes vía `Subscriber.Receive` y mapea a `Message` propio
 - `Close()` detiene todos los publishers y cierra el cliente gRPC
+
+El constructor existente `NewGCPPubSub` conserva su comportamiento. Para habilitar una política de reintentos acotada, usa `NewGCPPubSubWithRetry` con un `FailureRecorder` de PostgreSQL:
+
+```go
+policy := pubsub.DefaultRetryPolicy() // 5 intentos; backoff exponencial: 1s, 2s, 4s, 8s (máximo 30s)
+recorder, err := pubsub.NewPostgresFailureRecorder(db)
+if err != nil {
+    return err
+}
+ps, err := pubsub.NewGCPPubSubWithRetryAndLogger(ctx, projectID, policy, recorder, logger.L())
+if err != nil {
+    return err
+}
+err = ps.Subscribe(ctx, subscription, handler)
+```
+
+**Política ACK/NACK:** el adaptador confirma (`ACK`) únicamente si el handler retorna `nil`, o si todos los intentos fallan pero el mensaje se registra correctamente en `failed_pubsub_messages` como una derivación durable para investigación. Rechaza (`NACK`) si el handler falla sin política acotada, se cancela el contexto durante los reintentos o no se logra persistir el mensaje agotado; Pub/Sub lo podrá entregar otra vez. El ACK después de guardar un agotado significa que la responsabilidad se transfirió al registro durable, no que la operación de negocio haya tenido éxito. En Pub/Sub GCP, `AckFunc` y `NackFunc` en `Message` se conservan por compatibilidad, pero son no-op: el adaptador decide el ACK/NACK según el resultado del handler.
+
+La política por defecto realiza hasta 5 intentos en cada entrega, con esperas exponenciales de 1, 2, 4 y 8 segundos (máximo configurable: 30 segundos). Ejecuta `012_create_failed_pubsub_messages.up.sql` antes de habilitarla. Esta política solo aplica cuando el consumidor usa `NewGCPPubSubWithRetryAndLogger`; la aplicación aún no inicia consumidores por sí sola.
+
+Pub/Sub ofrece entrega **al menos una vez**: puede entregar el mismo mensaje más de una vez, por ejemplo si el proceso cae antes de que el ACK sea confirmado. No hay deduplicación automática en el adaptador. Los handlers deben ser idempotentes, usando un `event_id` estable (o `message_id` cuando el productor no provee uno) y guardando el registro de procesamiento en la misma transacción que sus efectos. El adaptador solo añade `event_id` a logs si contiene caracteres alfanuméricos, `-` o `_`; no registra payload ni atributos arbitrarios.
+
+### Logs y correlación
+
+Los logs se escriben con Zap y campos estructurados. Cada petición HTTP recibe un `X-Request-ID` generado por el servicio; el mismo ID aparece en el log de acceso y en los errores del handler. Se registra el template de ruta (no la URL cruda ni query string), método, estado y duración. Los errores registran su tipo, no el mensaje potencialmente sensible. Para Pub/Sub se registran suscripción, ID del mensaje, `event_id` validado, intento, tipo de error y decisión ACK/NACK; nunca se registran cuerpo, headers completos, RUT, credenciales ni atributos arbitrarios. Los consumidores pueden usar el `event_id` estable para correlacionar el recorrido del evento.
 
 ### Cableado
 
@@ -703,6 +762,10 @@ Las variables de entorno se cargan automáticamente desde `.env.{environment}` (
 cp .env.example .env.dev
 # editar .env.dev con tus valores
 ```
+
+### Apagado graceful
+
+Al recibir `SIGTERM` o `SIGINT` (Ctrl+C), el servidor deja de aceptar conexiones nuevas y espera que terminen las solicitudes HTTP activas hasta `SHUTDOWN_TIMEOUT` segundos (30 por defecto; debe ser mayor que cero). Si vence el límite, cierra las conexiones restantes y luego cierra la conexión a PostgreSQL. Los handlers deben respetar `c.Request.Context()` para cancelar sus operaciones cuando se interrumpa una solicitud. El proceso termina con error si no logra completar el drenaje antes del límite.
 
 ---
 
